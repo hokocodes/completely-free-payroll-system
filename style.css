@@ -55,3 +55,82 @@ a {
 a:hover {
     text-decoration: underline;
 }
+
+/* Mobile-friendly styles */
+@media (max-width: 768px) {
+    body {
+        margin: 10px;
+        font-size: 14px;
+    }
+    
+    h1, h2 {
+        font-size: 1.5em;
+        text-align: center;
+    }
+    
+    form {
+        padding: 15px;
+        margin-bottom: 15px;
+    }
+    
+    input[type="text"],
+    input[type="password"],
+    input[type="number"],
+    select {
+        padding: 12px;
+        margin-bottom: 15px;
+        font-size: 16px; /* Prevents zoom on iOS */
+    }
+    
+    input[type="submit"],
+    button {
+        width: 100%;
+        margin-bottom: 10px;
+        margin-right: 0;
+        padding: 15px;
+        font-size: 16px;
+    }
+    
+    .tab-buttons {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        margin-bottom: 20px;
+    }
+    
+    .tab-buttons button {
+        width: 100%;
+        margin-right: 0;
+    }
+    
+    table {
+        font-size: 12px;
+    }
+    
+    th, td {
+        padding: 6px;
+        word-wrap: break-word;
+    }
+    
+    /* Make tables scrollable on mobile */
+    .table-container {
+        overflow-x: auto;
+        margin-bottom: 20px;
+    }
+    
+    /* Responsive table */
+    @media (max-width: 480px) {
+        table {
+            font-size: 10px;
+        }
+        
+        th, td {
+            padding: 4px;
+        }
+        
+        /* Hide less important columns on very small screens */
+        .hide-mobile {
+            display: none;
+        }
+    }
+}

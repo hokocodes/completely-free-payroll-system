@@ -19,6 +19,14 @@ def calculate_pay(hours, hourly_rate):
     net_pay = gross - federal_tax
     return gross, federal_tax, state_tax, net_pay
 
+def calculate_pay_with_profile(hours, hourly_rate, is_nonresident_alien=False):
+    gross, federal_tax, state_tax, net_pay = calculate_pay(hours, hourly_rate)
+    if is_nonresident_alien:
+        # Simplified placeholder: 30% federal withholding for NRAs
+        federal_tax = gross * 0.30
+        net_pay = gross - federal_tax
+    return gross, federal_tax, state_tax, net_pay
+
 def haversine_distance(lat1, lon1, lat2, lon2):
     R = 6371000  # Earth radius in meters
     phi1 = math.radians(lat1)
