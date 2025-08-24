@@ -1,7 +1,6 @@
 
 import http.server
 import socketserver
-import cgi
 from urllib.parse import parse_qs
 import logging
 import socket
@@ -17,8 +16,8 @@ from logging.handlers import RotatingFileHandler
 from reportlab.lib.pagesizes import LETTER
 from reportlab.pdfgen import canvas
 from reportlab.lib import colors
-from data import load_employees, load_time_logs, save_time_logs, save_employee, ADMIN_PIN_HASH
-from payrollutils import haversine_distance, calculate_hours, calculate_pay, calculate_pay_with_profile, SHOP_LAT, SHOP_LON, ALLOWED_RADIUS_METERS
+from data import load_employees, load_time_logs, save_time_logs, save_employee, ADMIN_PIN_HASH, edit_time_log_session
+from payrollutils import haversine_distance, calculate_hours, calculate_pay_with_profile, SHOP_LAT, SHOP_LON, ALLOWED_RADIUS_METERS
 
 class TimeClockHandler(http.server.SimpleHTTPRequestHandler):
     # Load .env relative to this file to avoid CWD issues
@@ -69,6 +68,71 @@ class TimeClockHandler(http.server.SimpleHTTPRequestHandler):
                     'pin': emp_data.get('pin', '')
                 })
             self.wfile.write(json.dumps(employees_list).encode())
+            return
+        
+        if self.path == "/get_time_logs":
+            self.send_response(200)
+            self.send_header("Content-type", "application/json")
+            self.end_headers()
+            import json
+            time_logs_list = []
+            
+            # Get current time logs
+            current_time_logs = load_time_logs()
+            
+            # Add current clock-ins
+            for emp_id, data in current_time_logs.items():
+                if 'clock_in' in data:
+                    # Current clock-in
+                    location_info = ""
+                    if 'last_location' in data:
+                        lat = data['last_location'].get('lat', '')
+                        lon = data['last_location'].get('lon', '')
+                        if lat and lon:
+                            location_info = f"Lat: {lat:.4f}, Lon: {lon:.4f}"
+                    
+                    time_logs_list.append({
+                        'employee_id': emp_id,
+                        'name': data.get('name', ''),
+                        'type': 'Clock In',
+                        'time': data['clock_in'],
+                        'hours': 'Active',
+                        'location': location_info
+                    })
+                
+                # Add completed sessions
+                if 'sessions' in data:
+                    for idx, session in enumerate(data['sessions']):
+                        location_info = ""
+                        if 'location' in session:
+                            lat = session['location'].get('lat', '')
+                            lon = session['location'].get('lon', '')
+                            if lat and lon:
+                                location_info = f"Lat: {lat:.4f}, Lon: {lon:.4f}"
+                        
+                        # Clock-in entry
+                        time_logs_list.append({
+                            'employee_id': emp_id,
+                            'name': data.get('name', ''),
+                            'type': 'Clock In',
+                            'time': session['clock_in'],
+                            'hours': f"{session['hours']:.2f}",
+                            'location': location_info,
+                            'session_index': idx # Add session index
+                        })
+                        
+                        # Clock-out entry
+                        time_logs_list.append({
+                            'employee_id': emp_id,
+                            'name': data.get('name', ''),
+                            'type': 'Clock Out',
+                            'time': session['clock_out'],
+                            'hours': f"{session['hours']:.2f}",
+                            'location': location_info,
+                            'session_index': idx # Add session index
+                        })
+            
+            self.wfile.write(json.dumps(time_logs_list).encode())
             return
         
         # Handle HTML endpoints
@@ -381,6 +445,21 @@ class TimeClockHandler(http.server.SimpleHTTPRequestHandler):
                 response = self.override_clock_out(employee_id, clock_out_time)
             else:
                 response = "<h2>Invalid PIN</h2><a href='/'>Back</a>"
+        elif self.path == "/edit_time_log":
+            emp_id = params.get('employee_id', [''])[0]
+            session_index = int(params.get('session_index', [-1])[0])
+            new_clock_in = params.get('new_clock_in', [''])[0]
+            new_clock_out = params.get('new_clock_out', [''])[0]
+            admin_pin = params.get('admin_pin', [''])[0]
+            
+            if hashlib.sha256(admin_pin.encode()).hexdigest() == ADMIN_PIN_HASH:
+                if edit_time_log_session(emp_id, session_index, new_clock_in, new_clock_out):
+                    self.time_logs = load_time_logs() # Refresh time logs in handler
+                    response = f"<h2>Time log for {emp_id} (session {session_index}) updated successfully.</h2><a href=\"/admin?pin={admin_pin}\">Back to Admin</a>"
+                else:
+                    response = "<h2>Error: Failed to update time log. Invalid employee ID or session index.</h2><a href='/'>Back</a>"
+            else:
+                response = "<h2>Invalid Admin PIN</h2><a href='/'>Back</a>"
         else:
             if employee_id not in self.employees:
                 response = "<h2>Error: Invalid Employee ID</h2><a href='/'>Back</a>"
@@ -462,6 +541,12 @@ class TimeClockHandler(http.server.SimpleHTTPRequestHandler):
                         if (tabId === 'view-employees') {
                             console.log('Loading employees for view-employees tab');
                             setTimeout(loadEmployees, 100); // Small delay to ensure DOM is ready
+                        }
+                        
+                        // Load time logs when view-time-logs tab is shown
+                        if (tabId === 'view-time-logs') {
+                            console.log('Loading time logs for view-time-logs tab');
+                            setTimeout(loadTimeLogs, 100); // Small delay to ensure DOM is ready
                         }
                     }
                     
@@ -559,6 +644,96 @@ class TimeClockHandler(http.server.SimpleHTTPRequestHandler):
                         loadEmployees();
                     }
                     
+                    function loadTimeLogs() {
+                        console.log('Loading time logs...');
+                        fetch('/get_time_logs')
+                            .then(response => {
+                                console.log('Time logs response status:', response.status);
+                                return response.json();
+                            })
+                            .then(data => {
+                                console.log('Time logs data:', data);
+                                const tbody = document.getElementById('time-logs-tbody');
+                                if (!tbody) {
+                                    console.error('Could not find time-logs-tbody element');
+                                    return;
+                                }
+                                tbody.innerHTML = '';
+                                
+                                if (data.length === 0) {
+                                    tbody.innerHTML = '<tr><td colspan=\"6\" style=\"text-align: center; padding: 20px;\">No time logs found</td></tr>';
+                                    return;
+                                }
+                                
+                                data.forEach(log => {
+                                    const row = document.createElement('tr');
+                                    row.innerHTML = `
+                                        <td style=\"border: 1px solid #ddd; padding: 8px;\">${log.employee_id}</td>
+                                        <td style=\"border: 1px solid #ddd; padding: 8px;\">${log.name}</td>
+                                        <td style=\"border: 1px solid #ddd; padding: 8px;\">${log.type}</td>
+                                        <td style=\"border: 1px solid #ddd; padding: 8px;\">${log.time}</td>
+                                        <td style=\"border: 1px solid #ddd; padding: 8px;\">${log.hours}</td>
+                                        <td style=\"border: 1px solid #ddd; padding: 8px;\">${log.location}</td>
+                                        <td style=\"border: 1px solid #ddd; padding: 8px;\">
+                                            <button onclick=\"editTimeLog(${JSON.stringify(log).replace(/"/g, '&quot;')})\" style=\"padding: 5px 10px; background-color: #2196F3; color: white; border: none; border-radius: 3px; cursor: pointer;\">Edit</button>
+                                        </td>
+                                    `;
+                                    tbody.appendChild(row);
+                                });
+                                console.log('Time logs table populated with', data.length, 'rows');
+                            })
+                            .catch(error => {
+                                console.error('Error loading time logs:', error);
+                                const tbody = document.getElementById('time-logs-tbody');
+                                if (tbody) {
+                                    tbody.innerHTML = '<tr><td colspan=\"6\" style=\"text-align: center; padding: 20px; color: red;\">Error loading time logs: ' + error.message + '</td></tr>';
+                                }
+                            });
+                    }
+                    
+                    function editTimeLog(logEntry) {
+                        // This function will be implemented to open a modal or new form for editing.
+                        // For now, let's just log the entry.
+                        console.log('Editing time log:', logEntry);
+                        
+                        const adminPin = document.getElementById('admin_pin_for_actions_time_logs').value;
+                        if (!adminPin) {
+                            alert('Please enter the Admin PIN first to edit time logs.');
+                            return;
+                        }
+
+                        const newClockIn = prompt("Enter new Clock-In Time (YYYY-MM-DD HH:MM:SS)", logEntry.time);
+                        if (!newClockIn) return;
+
+                        const newClockOut = prompt("Enter new Clock-Out Time (YYYY-MM-DD HH:MM:SS)", logEntry.hours === 'Active' ? "" : logEntry.time);
+                        if (!newClockOut) return;
+
+                        fetch('/edit_time_log', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/x-www-form-urlencoded',
+                            },
+                            body: 'employee_id=' + encodeURIComponent(logEntry.employee_id) +
+                                  '&session_index=' + encodeURIComponent(logEntry.session_index) + 
+                                  '&new_clock_in=' + encodeURIComponent(newClockIn) +
+                                  '&new_clock_out=' + encodeURIComponent(newClockOut) +
+                                  '&admin_pin=' + encodeURIComponent(adminPin)
+                        })
+                        .then(response => response.text())
+                        .then(data => {
+                            alert(data);
+                            loadTimeLogs();
+                        })
+                        .catch(error => {
+                            console.error('Error editing time log:', error);
+                            alert('Error editing time log.');
+                        });
+                    }
+                    
+                    function refreshTimeLogs() {
+                        loadTimeLogs();
+                    }
+                    
                     window.onload = function() {
                         showTab('add-employee');
                     }
@@ -570,6 +745,7 @@ class TimeClockHandler(http.server.SimpleHTTPRequestHandler):
                 <button onclick=\"showTab('add-employee')\">Add Employee</button>
                 <button onclick=\"showTab('edit-employee')\">Edit Employee</button>
                 <button onclick=\"showTab('view-employees')\">View Employees</button>
+                <button onclick=\"showTab('view-time-logs')\">View Time Logs</button>
                 <button onclick=\"showTab('payment-method')\">Payment Method</button>
                 <button onclick=\"showTab('run-payroll')\">Run Payroll</button>
                 <button onclick=\"showTab('manager-override')\">Manager Override</button>
@@ -628,6 +804,32 @@ class TimeClockHandler(http.server.SimpleHTTPRequestHandler):
                     </table>
                 </div>
                 <button onclick=\"refreshEmployees()\" style=\"margin-top: 20px; padding: 10px; background-color: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer;\">Refresh Table</button>
+            </div>
+            <div id=\"view-time-logs\" class=\"tab\">
+                <h3>View All Time Logs</h3>
+                <div style=\"margin-bottom: 20px; padding: 15px; background-color: #f8f9fa; border-radius: 8px; border: 1px solid #dee2e6;\">
+                    <strong>Admin PIN Required for Actions:</strong><br>
+                    <input type=\"password\" id=\"admin_pin_for_actions_time_logs\" placeholder=\"Enter Admin PIN\" style=\"width: 200px; margin-top: 10px; padding: 8px; border: 1px solid #ddd; border-radius: 4px;\">
+                </div>
+                <div id=\"time-logs-table\" class=\"table-container\">
+                    <table style=\"width: 100%; border-collapse: collapse; margin-top: 20px;\">
+                        <thead>
+                            <tr style=\"background-color: #f2f2f2;\">
+                                <th style=\"border: 1px solid #ddd; padding: 8px; text-align: left;\">Employee ID</th>
+                                <th style=\"border: 1px solid #ddd; padding: 8px; text-align: left;\">Name</th>
+                                <th style=\"border: 1px solid #ddd; padding: 8px; text-align: left;\">Type</th>
+                                <th style=\"border: 1px solid #ddd; padding: 8px; text-align: left;\">Time</th>
+                                <th style=\"border: 1px solid #ddd; padding: 8px; text-align: left;\">Hours</th>
+                                <th style=\"border: 1px solid #ddd; padding: 8px; text-align: left;\">Location</th>
+                                <th style=\"border: 1px solid #ddd; padding: 8px; text-align: left;\">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id=\"time-logs-tbody\">
+                            <!-- Time log rows will be populated here -->
+                        </tbody>
+                    </table>
+                </div>
+                <button onclick=\"refreshTimeLogs()\" style=\"margin-top: 20px; padding: 10px; background-color: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer;\">Refresh Table</button>
             </div>
             <div id=\"payment-method\" class=\"tab\">
                 <h3>Payment Method</h3>
@@ -919,7 +1121,8 @@ class TimeClockHandler(http.server.SimpleHTTPRequestHandler):
 
             # Email paystub if SMTP configured and email provided
             try:
-                smtp_host = os.getenv('SMTP_HOST')
+                logging.info(f"Attempting to send paystub email to {email_addr}")
+                smtp_host = 'smtp.gmail.com'
                 smtp_port = int(os.getenv('SMTP_PORT', '0') or 0)
                 smtp_user = os.getenv('SMTP_USER')
                 smtp_pass = os.getenv('SMTP_PASS')

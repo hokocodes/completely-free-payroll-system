@@ -3,6 +3,8 @@ import csv
 import json
 import os
 import hashlib
+from payrollutils import calculate_hours
+import logging
 
 # File paths for local storage
 EMPLOYEES_FILE = "employees.csv"
@@ -134,3 +136,20 @@ def save_time_logs(logs):
         json.dump(logs, f, indent=2)
     with open(BACKUP_TIME_LOGS_FILE, 'w') as f:
         json.dump(logs, f, indent=2)
+
+def edit_time_log_session(employee_id, session_index, new_clock_in, new_clock_out, manager_override=True):
+    logging.debug(f"[edit_time_log_session] Attempting to edit log for employee_id: {employee_id}, session_index: {session_index}")
+    logs = load_time_logs()
+    logging.debug(f"[edit_time_log_session] Logs before modification: {logs.get(employee_id)}")
+    if employee_id in logs and 'sessions' in logs[employee_id] and 0 <= session_index < len(logs[employee_id]['sessions']):
+        session = logs[employee_id]['sessions'][session_index]
+        session['clock_in'] = new_clock_in
+        session['clock_out'] = new_clock_out
+        session['hours'] = calculate_hours(new_clock_in, new_clock_out)
+        session['manager_override'] = manager_override
+        logging.debug(f"[edit_time_log_session] Log after modification (before save): {logs[employee_id]['sessions'][session_index]}")
+        save_time_logs(logs)
+        logging.debug(f"[edit_time_log_session] Logs after save: {load_time_logs().get(employee_id)}")
+        return True
+    logging.warning(f"[edit_time_log_session] Failed to find log entry for employee_id: {employee_id}, session_index: {session_index}")
+    return False

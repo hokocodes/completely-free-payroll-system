@@ -6,6 +6,7 @@ from data import (
     load_time_logs,
     save_time_logs,
     ADMIN_PIN_HASH,
+    edit_time_log_session,
 )
 from payrollutils import calculate_hours, calculate_pay_with_profile
 import hashlib
@@ -22,7 +23,7 @@ from reportlab.lib.pagesizes import LETTER
 from reportlab.pdfgen import canvas
 from reportlab.lib import colors
 import tkinter.ttk as ttk
-
+import server
 
 class PayrollApp:
     def __init__(self, root):
@@ -407,6 +408,42 @@ class PayrollApp:
         refresh_button = tk.Button(view_employees_frame, text="Refresh Table", command=self.populate_employee_table)
         refresh_button.pack(pady=5)
 
+        # View Time Logs Tab
+        view_time_logs_frame = tk.Frame(notebook)
+        notebook.add(view_time_logs_frame, text="View Time Logs")
+        
+        # Create Treeview for time logs table
+        time_logs_columns = ("Employee ID", "Name", "Type", "Time", "Hours", "Location")
+        time_logs_tree = ttk.Treeview(view_time_logs_frame, columns=time_logs_columns, show="headings", height=15)
+        
+        # Set column headings
+        for col in time_logs_columns:
+            time_logs_tree.heading(col, text=col)
+            time_logs_tree.column(col, width=120)
+        
+        # Add scrollbars
+        time_logs_v_scrollbar = ttk.Scrollbar(view_time_logs_frame, orient="vertical", command=time_logs_tree.yview)
+        time_logs_h_scrollbar = ttk.Scrollbar(view_time_logs_frame, orient="horizontal", command=time_logs_tree.xview)
+        time_logs_tree.configure(yscrollcommand=time_logs_v_scrollbar.set, xscrollcommand=time_logs_h_scrollbar.set)
+        
+        # Pack the treeview and scrollbars
+        time_logs_tree.pack(side="left", fill="both", expand=True)
+        time_logs_v_scrollbar.pack(side="right", fill="y")
+        time_logs_h_scrollbar.pack(side="bottom", fill="x")
+        
+        # Store reference to the time logs tree
+        self.time_logs_tree = time_logs_tree
+        
+        # Populate time logs table initially
+        self.populate_time_logs_table()
+        
+        # Add refresh button
+        time_logs_refresh_button = tk.Button(view_time_logs_frame, text="Refresh Table", command=self.populate_time_logs_table)
+        time_logs_refresh_button.pack(pady=5)
+        
+        # Bind right-click to show context menu for time logs
+        self.time_logs_tree.bind("<Button-3>", self.show_time_log_context_menu)
+
     def update_employee(
         self, emp_id, name, rate, ssn, address, email, visa_status, nra, pin
     ):
@@ -434,7 +471,7 @@ class PayrollApp:
             current.get("payroll_card_id", ""),
             pin or current.get("pin", ""),
         )
-        self.employees = load_employees()
+        server.TimeClckHandler.employees = load_employees()
         messagebox.showinfo("Success", "Employee updated.")
 
     def update_payment_method(self, emp_id, method, routing, account, card_id):
@@ -555,17 +592,17 @@ class PayrollApp:
         print(f"[DEBUG] Available employee IDs: {list(self.employees.keys())}")
         print(f"[DEBUG] Employee ID type: {type(emp_id)}, Employees keys types: {[type(k) for k in self.employees.keys()]}")
         if emp_id in self.employees and hasattr(self, 'edit_fields'):
-            print(f"[DEBUG] Employee found and edit_fields exist")
+            print("[DEBUG] Employee found and edit_fields exist")
             emp_data = self.employees[emp_id]
             
             # Find the admin window and switch to edit tab
             for widget in self.root.winfo_children():
                 if isinstance(widget, tk.Toplevel) and widget.title() == "Admin Panel":
-                    print(f"[DEBUG] Found admin panel window")
+                    print("[DEBUG] Found admin panel window")
                     # Find the notebook in the admin window
                     for child in widget.winfo_children():
                         if isinstance(child, ttk.Notebook):
-                            print(f"[DEBUG] Found notebook, switching to edit tab")
+                            print("[DEBUG] Found notebook, switching to edit tab")
                             # Switch to edit employee tab (index 1)
                             child.select(1)
                             break
@@ -590,7 +627,7 @@ class PayrollApp:
             self.edit_fields['nra'].insert(0, emp_data.get("w4_nonresident_alien", ""))
             self.edit_fields['pin'].delete(0, tk.END)
             self.edit_fields['pin'].insert(0, emp_data.get("pin", ""))
-            print(f"[DEBUG] Fields populated successfully")
+            print("[DEBUG] Fields populated successfully")
         else:
             print(f"[DEBUG] Employee not found or edit_fields don't exist. emp_id: {emp_id}, has_edit_fields: {hasattr(self, 'edit_fields')}")
 
@@ -627,7 +664,7 @@ class PayrollApp:
 
     def populate_employee_table(self):
         """Populate the employee table with current data"""
-        print(f"[DEBUG] populate_employee_table called")
+        print("[DEBUG] populate_employee_table called")
         print(f"[DEBUG] Available employees: {list(self.employees.keys())}")
         if hasattr(self, 'employee_tree'):
             # Clear existing items
@@ -669,6 +706,7 @@ class PayrollApp:
                 "manager_override": True,
             }
             save_time_logs(self.time_logs)
+            self.time_logs = load_time_logs() # Reload time logs after saving
             messagebox.showinfo(
                 "Success",
                 f"Clock-in time set to {clock_in_time} for {self.employees[emp_id]['name']}.",
@@ -699,6 +737,7 @@ class PayrollApp:
             )
             del self.time_logs[emp_id]["clock_in"]
             save_time_logs(self.time_logs)
+            self.time_logs = load_time_logs() # Reload time logs after saving
             messagebox.showinfo(
                 "Success",
                 f"Clock-out time set to {clock_out_time} for {self.employees[emp_id]['name']}. Hours: {hours:.2f}",
@@ -776,7 +815,7 @@ class PayrollApp:
                 sf.write(f"""
                 <html><body>
                 <h3>Paystub - {today}</h3>
-                <p>Employee: {data["name"]} (ID: {emp_id})</p>
+                <p>Employee: {data['name']} (ID: {emp_id})</p>
                 <p>Total Hours: {total_hours:.2f}</p>
                 <p>Hourly Rate: ${rate:.2f}</p>
                 <p>Gross Pay: ${gross:.2f}</p>
@@ -937,41 +976,41 @@ class PayrollApp:
             c.save()
 
             try:
-                logging.debug("Reading SMTP_HOST from environment")
-                smtp_host = os.getenv("SMTP_HOST")
-                logging.debug(f"SMTP_HOST: {smtp_host}")
+                print("Reading SMTP_HOST from environment")
+                smtp_host = 'smtp.gmail.com'
+                print("SMTP_HOST: {}".format(smtp_host))
 
-                logging.debug("Reading SMTP_PORT from environment")
+                print("Reading SMTP_PORT from environment")
                 smtp_port = int(os.getenv("SMTP_PORT", "0") or 0)
-                logging.debug(f"SMTP_PORT: {smtp_port}")
+                print("SMTP_PORT: {}".format(smtp_port))
 
-                logging.debug("Reading SMTP_USER from environment")
+                print("Reading SMTP_USER from environment")
                 smtp_user = os.getenv("SMTP_USER")
-                logging.debug(f"SMTP_USER: {smtp_user}")
+                print("SMTP_USER: {}".format(smtp_user))
 
-                logging.debug("Reading SMTP_PASS from environment")
+                print("Reading SMTP_PASS from environment")
                 smtp_pass = os.getenv("SMTP_PASS")
-                logging.debug(f"SMTP_PASS: {'***' if smtp_pass else None}")
+                print("SMTP_PASS: {}".format('***' if smtp_pass else None))
 
-                logging.debug("Reading FROM_EMAIL from environment or using SMTP_USER")
+                print("Reading FROM_EMAIL from environment or using SMTP_USER")
                 from_email = os.getenv("FROM_EMAIL") or smtp_user
-                logging.debug(f"FROM_EMAIL: {from_email}")
+                print("FROM_EMAIL: {}".format(from_email))
 
-                logging.debug("Reading SMTP_USE_SSL from environment")
+                print("Reading SMTP_USE_SSL from environment")
                 smtp_use_ssl = str(os.getenv("SMTP_USE_SSL", "true")).lower() in [
                     "1",
                     "true",
                     "yes",
                 ]
-                logging.debug(f"SMTP_USE_SSL: {smtp_use_ssl}")
+                print("SMTP_USE_SSL: {}".format(smtp_use_ssl))
 
-                logging.debug("Reading SMTP_USE_STARTTLS from environment")
+                print("Reading SMTP_USE_STARTTLS from environment")
                 smtp_use_starttls = str(
                     os.getenv("SMTP_USE_STARTTLS", "false")
                 ).lower() in ["1", "true", "yes"]
-                logging.debug(f"SMTP_USE_STARTTLS: {smtp_use_starttls}")
+                print("SMTP_USE_STARTTLS: {}".format(smtp_use_starttls))
 
-                logging.debug("Checking if all SMTP and email parameters are present")
+                print("Checking if all SMTP and email parameters are present")
                 if (
                     smtp_host
                     and smtp_port
@@ -1080,3 +1119,129 @@ class PayrollApp:
             "Payroll Complete",
             "Payroll report generated as payroll_report.csv. Payments/taxes CSVs and paystubs created. Email sent if configured.",
         )
+
+    def populate_time_logs_table(self):
+        """Populate the time logs table with all clock-ins and clock-outs"""
+        # Clear existing items
+        self.time_logs_tree.delete(*self.time_logs_tree.get_children())
+        
+        # Get current time logs
+        current_time_logs = load_time_logs()
+        
+        # Add current clock-ins
+        for emp_id, data in current_time_logs.items():
+            if 'clock_in' in data:
+                # Current clock-in
+                location_info = ""
+                if 'last_location' in data:
+                    lat = data['last_location'].get('lat', '')
+                    lon = data['last_location'].get('lon', '')
+                    if lat and lon:
+                        location_info = f"Lat: {lat:.4f}, Lon: {lon:.4f}"
+                
+                self.time_logs_tree.insert("", "end", iid=f"{emp_id}_active", values=(
+                    emp_id,
+                    data.get('name', ''),
+                    'Clock In',
+                    data['clock_in'],
+                    'Active',
+                    location_info
+                ))
+            
+            # Add completed sessions
+            if 'sessions' in data:
+                for idx, session in enumerate(data['sessions']):
+                    location_info = ""
+                    if 'location' in session:
+                        lat = session['location'].get('lat', '')
+                        lon = session['location'].get('lon', '')
+                        if lat and lon:
+                            location_info = f"Lat: {lat:.4f}, Lon: {lon:.4f}"
+                    
+                    # Clock-in entry
+                    self.time_logs_tree.insert("", "end", iid=f"{emp_id}_{idx}_in", values=(
+                        emp_id,
+                        data.get('name', ''),
+                        'Clock In',
+                        session['clock_in'],
+                        f"{session['hours']:.2f}",
+                        location_info,
+                        idx # Store index for editing
+                    ))
+                    
+                    # Clock-out entry
+                    self.time_logs_tree.insert("", "end", iid=f"{emp_id}_{idx}_out", values=(
+                        emp_id,
+                        data.get('name', ''),
+                        'Clock Out',
+                        session['clock_out'],
+                        f"{session['hours']:.2f}",
+                        location_info,
+                        idx # Store index for editing
+                    ))
+
+    def show_time_log_context_menu(self, event):
+        """Show context menu for time log selection"""
+        selected_item = self.time_logs_tree.focus()
+        if selected_item:
+            item_values = self.time_logs_tree.item(selected_item, 'values')
+            if item_values:
+                emp_id = item_values[0]
+                session_index = item_values[6] if len(item_values) > 6 else None
+
+                context_menu = tk.Menu(self.root, tearoff=0)
+                if session_index is not None:
+                    context_menu.add_command(label="Edit Time Log", command=lambda: self.edit_time_log_entry(emp_id, int(session_index)))
+                context_menu.tk_popup(event.x_root, event.y_root)
+
+    def edit_time_log_entry(self, emp_id, session_index):
+        """Opens a dialog to edit a specific time log entry."""
+        logs = load_time_logs()
+        if emp_id not in logs or 'sessions' not in logs[emp_id] or not (0 <= session_index < len(logs[emp_id]['sessions'])):
+            messagebox.showerror("Error", "Time log entry not found.")
+            return
+
+        session = logs[emp_id]['sessions'][session_index]
+        current_clock_in = session['clock_in']
+        current_clock_out = session['clock_out']
+
+        edit_window = tk.Toplevel(self.root)
+        edit_window.title("Edit Time Log Entry")
+
+        tk.Label(edit_window, text=f"Employee ID: {emp_id}").pack(pady=5)
+        tk.Label(edit_window, text=f"Session Index: {session_index}").pack(pady=5)
+
+        tk.Label(edit_window, text="New Clock-In Time (YYYY-MM-DD HH:MM:SS):").pack(pady=5)
+        new_clock_in_entry = tk.Entry(edit_window, width=30)
+        new_clock_in_entry.insert(0, current_clock_in)
+        new_clock_in_entry.pack(pady=5)
+
+        tk.Label(edit_window, text="New Clock-Out Time (YYYY-MM-DD HH:MM:SS):").pack(pady=5)
+        new_clock_out_entry = tk.Entry(edit_window, width=30)
+        new_clock_out_entry.insert(0, current_clock_out)
+        new_clock_out_entry.pack(pady=5)
+
+        def save_edits():
+            updated_clock_in = new_clock_in_entry.get()
+            updated_clock_out = new_clock_out_entry.get()
+            
+            if not updated_clock_in or not updated_clock_out:
+                messagebox.showerror("Error", "Both clock-in and clock-out times are required.")
+                return
+
+            try:
+                datetime.datetime.strptime(updated_clock_in, "%Y-%m-%d %H:%M:%S")
+                datetime.datetime.strptime(updated_clock_out, "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                messagebox.showerror("Error", "Invalid time format. Use YYYY-MM-DD HH:MM:SS.")
+                return
+            
+            if edit_time_log_session(emp_id, session_index, updated_clock_in, updated_clock_out):
+                messagebox.showinfo("Success", "Time log updated successfully.")
+                self.populate_time_logs_table() # Refresh the table
+                edit_window.destroy()
+            else:
+                messagebox.showerror("Error", "Failed to update time log.")
+
+        tk.Button(edit_window, text="Save Changes", command=save_edits).pack(pady=10)
+        tk.Button(edit_window, text="Cancel", command=edit_window.destroy).pack(pady=5)
